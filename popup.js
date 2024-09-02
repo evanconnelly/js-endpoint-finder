@@ -10,16 +10,26 @@ document.getElementById('get-urls').addEventListener('click', async () => {
 
 function extractURLs(domain) {
   var scripts = document.getElementsByTagName("script"),
-      regex = /(?<=("|'|`))(?:\/\/[^/]+)?\/[a-zA-Z0-9_?&=\/\-\#\.]*(?=("|'|`))/g;
+      regex = /(?<=("|'|`))(?:(?:https?:)?\/\/[^/'"]+)?\/[a-zA-Z0-9_\-./]+(?:\?[^"'`]*)?(?=("|'|`))/g;
   const results = new Set();
   
+  function isValidURL(url) {
+    const jsPatterns = [
+      '+', '=', '(', ')', '{', '}', 'function', 'var', 'let', 'const', 'window', 'document',
+      '.concat', '.slice', '.indexOf', 'try', 'catch', 'return'
+    ];
+    return !jsPatterns.some(pattern => url.includes(pattern)) && url.length > 1;
+  }
+
   for (var i = 0; i < scripts.length; i++) {
     var t = scripts[i].src;
     if (t !== "") {
       fetch(t).then(function(t){ return t.text() })
         .then(function(t){
           var e = t.matchAll(regex);
-          for (let r of e) results.add(r[0]);
+          for (let r of e) {
+            if (isValidURL(r[0])) results.add(r[0]);
+          }
         })
         .catch(function(t){ console.log("An error occurred: ", t) });
     }
@@ -27,7 +37,9 @@ function extractURLs(domain) {
   
   var pageContent = document.documentElement.outerHTML,
       matches = pageContent.matchAll(regex);
-  for (const match of matches) results.add(match[0]);
+  for (const match of matches) {
+    if (isValidURL(match[0])) results.add(match[0]);
+  }
   
   setTimeout(() => {
     chrome.runtime.sendMessage({ domain, urls: Array.from(results) });
@@ -49,8 +61,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   let storedURLs = localStorage.getItem('storedURLs');
   
   storedURLs = storedURLs && isValidJSON(storedURLs) ? JSON.parse(storedURLs) : {};
+  
+  // Merge new URLs with existing ones
+  if (!storedURLs[domain]) {
+    storedURLs[domain] = new Set();
+  } else {
+    storedURLs[domain] = new Set(storedURLs[domain]);
+  }
+  
+  urls.forEach(url => storedURLs[domain].add(url));
+  
   // Convert the URLs to clickable links
-  const clickableURLs = urls.map(url => {
+  const clickableURLs = Array.from(storedURLs[domain]).map(url => {
     if (url.startsWith('//')) {
       const displayUrl = url.substring(2); // Remove '//' from display
       return `<a href="https:${url}" target="_blank">${displayUrl}</a>`;
@@ -61,9 +83,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
   }).join('<br>');
   
-  storedURLs[domain] = clickableURLs;
+  storedURLs[domain] = Array.from(storedURLs[domain]); // Convert Set back to Array for storage
   localStorage.setItem('storedURLs', JSON.stringify(storedURLs));
-  document.getElementById('output').innerHTML = storedURLs[domain];
+  document.getElementById('output').innerHTML = clickableURLs;
 });
 
 // Load stored URLs for the current domain when the pop-up opens
@@ -74,7 +96,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   
   storedURLs = storedURLs && isValidJSON(storedURLs) ? JSON.parse(storedURLs) : {};
   if (storedURLs[domain]) {
-    document.getElementById('output').innerHTML = storedURLs[domain];
+    const clickableURLs = storedURLs[domain].map(url => {
+      if (url.startsWith('//')) {
+        const displayUrl = url.substring(2); // Remove '//' from display
+        return `<a href="https:${url}" target="_blank">${displayUrl}</a>`;
+      } else if (url.startsWith('/')) {
+        return `<a href="https://${domain}${url}" target="_blank">${domain}${url}</a>`;
+      } else {
+        return `<a href="${url}" target="_blank">${url}</a>`;
+      }
+    }).join('<br>');
+    document.getElementById('output').innerHTML = clickableURLs;
   } else {
     document.getElementById('output').innerHTML = "No URLs found for this domain.";
   }
